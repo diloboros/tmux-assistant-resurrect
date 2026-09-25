@@ -82,10 +82,11 @@ SID_STALE="11111111-2222-4333-8444-555555555555"
 
 # Mirror the real layout: session-state/<uuid>/inuse.<pid>.lock, content = PID.
 # See test/copilot-contract-test.sh, which pins this against the real binary.
-# A *resumable* session: the lock names the owning PID, and session.db marks it
-# as having real content. Copilot writes the lock at TUI startup but session.db
-# only once the conversation has content, and `--resume` rejects a session
-# without it. See test/copilot-contract-test.sh.
+# A *resumable* session: the lock names the owning PID, and a content marker
+# (legacy session.db, or a 1.0.88+ non-empty events.jsonl) shows the session
+# has real content. Copilot writes the lock at TUI startup but the content
+# marker only once the conversation has content, and `--resume` rejects a
+# session without it. See test/copilot-contract-test.sh.
 make_lock() {
 	local sid="$1" pid="$2"
 	mkdir -p "$COPILOT_STATE/$sid"
@@ -142,17 +143,31 @@ assert_eq "PID with no lock resolves nothing" "" \
 	"$(get_copilot_session 1003 "copilot" 0)"
 
 echo "== resumability gate =="
-# A freshly opened TUI has a lock but no session.db. Saving that UUID would make
-# restore replay `--resume=<uuid>` and print "No session, task, or name matched"
-# into the user's pane, so it must resolve to nothing until content exists.
+# A freshly opened TUI has a lock but no content marker. Saving that UUID would
+# make restore replay `--resume=<uuid>` and print "No session, task, or name
+# matched" into the user's pane, so it must resolve to nothing until content
+# exists.
 SID_EMPTY="55555555-6666-4777-8888-999999999999"
 mkdir -p "$COPILOT_STATE/$SID_EMPTY"
 printf '%s\n' 1007 >"$COPILOT_STATE/$SID_EMPTY/inuse.1007.lock"
-assert_eq "session with no session.db is not saved" "" \
+assert_eq "session with no content marker is not saved" "" \
 	"$(get_copilot_session 1007 "copilot" 0)"
 : >"$COPILOT_STATE/$SID_EMPTY/session.db"
 assert_eq "same session resolves once session.db appears" "$SID_EMPTY" \
 	"$(get_copilot_session 1007 "copilot" 0)"
+
+# Copilot 1.0.88 stopped writing session.db and keeps the transcript in
+# events.jsonl instead. A non-empty events.jsonl is resumable content too; an
+# empty one (0 bytes) is not, so the gate uses -s for it.
+SID_EVENTS="44444444-5555-4666-8777-888888888888"
+mkdir -p "$COPILOT_STATE/$SID_EVENTS"
+printf '%s\n' 1008 >"$COPILOT_STATE/$SID_EVENTS/inuse.1008.lock"
+: >"$COPILOT_STATE/$SID_EVENTS/events.jsonl"
+assert_eq "empty events.jsonl does not count as content" "" \
+	"$(get_copilot_session 1008 "copilot" 0)"
+printf '{"type":"user"}\n' >"$COPILOT_STATE/$SID_EVENTS/events.jsonl"
+assert_eq "non-empty events.jsonl resolves without session.db" "$SID_EVENTS" \
+	"$(get_copilot_session 1008 "copilot" 0)"
 
 echo "== lock integrity =="
 mkdir -p "$COPILOT_STATE/not-a-uuid"
@@ -200,11 +215,18 @@ assert_eq "deferred argv fallback can be disabled" "" \
 # or it re-introduces exactly the unresumable saves the gate exists to prevent.
 SID_ARGV_EMPTY="99999999-aaaa-4bbb-8ccc-dddddddddddd"
 mkdir -p "$COPILOT_STATE/$SID_ARGV_EMPTY"
-assert_eq "argv fallback declines a session with no session.db" "" \
+assert_eq "argv fallback declines a session with no content marker" "" \
 	"$(get_copilot_session 3002 "copilot --session-id=$SID_ARGV_EMPTY")"
 : >"$COPILOT_STATE/$SID_ARGV_EMPTY/session.db"
 assert_eq "argv fallback accepts it once session.db appears" "$SID_ARGV_EMPTY" \
 	"$(get_copilot_session 3002 "copilot --session-id=$SID_ARGV_EMPTY")"
+
+# The argv fallback honors the events.jsonl marker too (Copilot 1.0.88+).
+SID_ARGV_EVENTS="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+mkdir -p "$COPILOT_STATE/$SID_ARGV_EVENTS"
+printf '{"type":"user"}\n' >"$COPILOT_STATE/$SID_ARGV_EVENTS/events.jsonl"
+assert_eq "argv fallback accepts a non-empty events.jsonl" "$SID_ARGV_EVENTS" \
+	"$(get_copilot_session 3003 "copilot --session-id=$SID_ARGV_EVENTS")"
 
 echo "== state root resolution =="
 # Deprecated but still honored: --config-dir moves the whole state root, and a

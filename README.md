@@ -788,14 +788,16 @@ unambiguous. An in-process `/resume` can leave the prior session's lock behind,
 so the newest valid lock for the PID is selected. Copilot runs as an npm loader
 plus a native child; only the child owns the lock.
 
-Copilot writes `session.db` into that directory once the conversation has real
-content, and **only such a session can be resumed** — `--resume=<uuid>` on a
-still-empty one exits with `No session, task, or name matched`. The save hook
-therefore requires `session.db` before saving a session, so restore never
-replays a command that would error in your pane. The lock still does the
-PID-to-session mapping, so this gate costs nothing but a file test. If an
-in-process `/resume` leaves more than one lock for the same process, the newest
-one wins.
+Copilot records a session's conversation content once it has real content, and
+**only such a session can be resumed** — `--resume=<uuid>` on a still-empty one
+exits with `No session, task, or name matched`. The save hook therefore requires
+a content marker before saving a session, so restore never replays a command
+that would error in your pane. Where that marker lives changed across versions:
+builds through ~1.0.78 wrote a per-session `session.db`; 1.0.88 stopped creating
+it and keeps the transcript in a non-empty `events.jsonl` instead. The hook
+accepts either. The lock still does the PID-to-session mapping, so this gate
+costs nothing but a file test. If an in-process `/resume` leaves more than one
+lock for the same process, the newest one wins.
 
 (Not to be confused with `session-store.db`, which lives at the root of
 `~/.copilot`, is shared by every session, and cannot identify one.)
@@ -805,11 +807,12 @@ set it for tmux too (`tmux set-environment -g COPILOT_HOME ...`) or launch with
 `--config-dir`. The resolved root is saved and replayed through `COPILOT_HOME`,
 including paths containing spaces.
 
-Neither the lock file nor the `session.db` gate is part of Copilot's documented
-interface, so `test/copilot-contract-test.sh` asserts both against the real
-binary (no authentication required) and fails loudly if a future release changes
-them. The full authenticated round trip — prompt, save, kill, restore, and
-confirm the conversation is still there — was verified by hand against 1.0.78.
+Neither the lock file nor the content-marker gate is part of Copilot's
+documented interface, so `test/copilot-contract-test.sh` asserts both against the
+real binary (no authentication required) and fails loudly if a future release
+changes them. The full authenticated round trip — prompt, save, kill, restore,
+and confirm the conversation is still there — was verified by hand against
+1.0.78.
 
 An explicit `--session-id <uuid>` or `--resume <uuid>` in process args is the
 fallback for the brief startup window before the lock exists. Restore uses

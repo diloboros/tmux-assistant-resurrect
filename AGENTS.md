@@ -129,17 +129,23 @@ process args as a reliable fallback.
   `COPILOT_HOME` replaces the whole `~/.copilot` path, same convention as
   `GROK_HOME`. An in-process `/resume` can leave more
   than one valid lock for the same PID, so the newest valid lock is authoritative.
-- The lock alone is not enough: it appears at TUI startup, but Copilot writes
-  `<session-state>/<uuid>/session.db` only once the conversation has content,
-  and only such a session is resumable (`--resume` on an empty one exits with
-  "No session, task, or name matched"). The save hook gates on `session.db` so
-  restore never replays a command that errors in the pane. This costs no process
-  inspection: the lock already identified the directory, so the gate is a plain
-  file test. Do not confuse it with `session-store.db`, which sits at the root of
-  `COPILOT_HOME`, is shared by every session, and cannot identify one.
+- The lock alone is not enough: it appears at TUI startup, but Copilot records
+  the conversation transcript only once the session has content, and only such a
+  session is resumable (`--resume` on an empty one exits with "No session, task,
+  or name matched"). The save hook gates on a content marker via
+  `_copilot_session_has_content()` so restore never replays a command that
+  errors in the pane. Where that marker lives changed across versions, so the
+  helper accepts either: builds through ~1.0.78 wrote a per-session
+  `session.db` (matched with `-f`, since the unit tests stand it in with an
+  empty file); 1.0.88 stopped creating it and keeps the transcript in a
+  non-empty `events.jsonl` (matched with `-s`, because an empty transcript is
+  not resumable content). This costs no process inspection: the lock already
+  identified the directory, so the gate is a plain file test. Do not confuse it
+  with `session-store.db`, which sits at the root of `COPILOT_HOME`, is shared
+  by every session, and cannot identify one.
 - Testing that gate unauthenticated only reaches the negative half: a container
-  session never gains content, so `session.db` never appears. The contract test
-  asserts that half; `run-tests.sh` touches the file to stand in for "the user
+  session never gains content, so no content marker appears. The contract test
+  asserts that half; `run-tests.sh` writes a stand-in marker for "the user
   typed something". The positive half needs a real login and is verified by
   `test/copilot-e2e-authenticated.sh`.
 - Session lookup helpers may legitimately find no ID. Every `get_<tool>_session`
@@ -306,6 +312,7 @@ changes after an upgrade, check the relevant source to confirm.
 | **Cursor launchers expose `--use-system-ca <package>/index.js` before user argv** | These runtime-only tokens must be removed before `extract_cli_args()` drops positional prompts, otherwise all real user options after `index.js` are lost. | Run `ps -eo args=` on the current `agent` and `cursor-agent` installer symlinks |
 | **Claude transcript project keys use ASCII replacement plus a 200-character hash cap** | The cwd-scoped last-resort resolver must name the same `~/.claude/projects/<key>` directory for underscores, Unicode, astral characters, and long paths. | Claude Code source: `L1o()` / `GV()` project-key helpers; inspect a transcript directory created from an edge-case cwd |
 | **Copilot writes `<session-state>/<uuid>/inuse.<pid>.lock`** | Primary PID-to-session mapping for bare launches and in-process `/resume`; avoids same-cwd ambiguity and stale npm-loader argv. Undocumented upstream, hence the contract test | `test/copilot-contract-test.sh` asserts it against the real binary; manually, `ls ~/.copilot/session-state/*/inuse.*.lock` while Copilot runs |
+| **Copilot's resumable-content marker** is a per-session `session.db` (builds ≤ ~1.0.78) or a non-empty `events.jsonl` (1.0.88+) | The resumability gate (`_copilot_session_has_content()`) declines empty sessions so restore never replays a `--resume` that errors. 1.0.88 dropped `session.db`, so a `session.db`-only gate silently rejects every new session | Start a fresh session, prompt it once, then `ls ~/.copilot/session-state/<uuid>/`; confirm which of `session.db` / `events.jsonl` appears. `copilot --version` for the running build |
 | **Claude hook spawns intermediate `sh -c`** | `$PPID` in the hook is NOT Claude's PID; hooks walk the process tree via `find_claude_pid()` (max 5 levels) | Run `ps -eo pid=,ppid=,args=` while a hook is executing |
 | **Claude hides `--system-prompt-file` and `--append-system-prompt-file` from `--help`** | Both are accepted, but neither appears in the option list -- they are named only in the prose of `--setting-sources`. `_discover_option_value_flags()` therefore cannot see them, and only `OPTION_VALUE_FLAGS_FALLBACK_claude` pins them as value-taking. Read as booleans, the path becomes the first positional and `_drop_positional_args()` discards it along with the whole tail; restore then replays a bare flag and claude consumes the next one as its filename. If a future release documents them, discovery covers it and the fallback entries become redundant rather than wrong | `claude --help \| grep -- '--system-prompt-file'` -- currently no match in the option list; `test/save-hardening-unit-tests.sh` pins the resulting behaviour |
 | **OpenCode plugins run in-process** | `process.pid` in the plugin IS the opencode binary's PID; state file is keyed by this PID | OpenCode source: search for `await import(` in the plugin loader (approx. `packages/opencode/src/plugin/index.ts` -- path may move) |

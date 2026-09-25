@@ -43,8 +43,14 @@ copilot --no-auto-update --allow-all --session-id="$UUID" \
 	-p "Remember this magic word for later: $MAGIC. Reply with just: STORED" </dev/null 2>&1 | head -3
 DIR="$HOME/.copilot/session-state/$UUID"
 echo "session dir: $(ls "$DIR" 2>/dev/null | tr '\n' ' ')"
-[ -f "$DIR/session.db" ] && echo "PASS: session.db written -> session is resumable" || {
-	echo "FAIL: no session.db"; exit 1; }
+# Content marker moved across versions: builds through ~1.0.78 wrote session.db;
+# 1.0.88 keeps the transcript in a non-empty events.jsonl. Either proves the
+# session gained resumable content.
+if [ -f "$DIR/session.db" ] || [ -s "$DIR/events.jsonl" ]; then
+	echo "PASS: content marker written -> session is resumable"
+else
+	echo "FAIL: no session.db and no non-empty events.jsonl"; exit 1
+fi
 
 step "2. open that session in a live TUI (what a user would have running)"
 tmux new-session -d -s e2e -c /tmp

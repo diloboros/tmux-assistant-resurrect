@@ -577,6 +577,29 @@ _copilot_lock_is_live() {
 	! _file_predates_process "$1" "$2"
 }
 
+# Resumability content marker for a Copilot session directory. The lock appears
+# at TUI startup, but `--resume=<uuid>` needs the session to already hold real
+# conversation content -- resuming a still-empty one exits with "No session,
+# task, or name matched" -- so a contentless session must be treated as
+# "nothing to save yet".
+#
+# Where that content marker lives changed across Copilot versions, so accept
+# either spelling:
+#   - builds through ~1.0.78 wrote a per-session `session.db`;
+#   - 1.0.88 stopped creating `session.db` and keeps the transcript in a
+#     non-empty `events.jsonl` instead.
+# Verified on 1.0.88: a fresh session has neither file and `--resume` on it
+# errors, whereas a session with a non-empty `events.jsonl` (and no session.db)
+# resumes. `session.db` is matched with -f to preserve the historical contract
+# (the unit tests stand it in with an empty file); `events.jsonl` is matched
+# with -s because an empty transcript is not resumable content. Never look at
+# `session-store.db` at the COPILOT_HOME root -- it is shared by every session
+# and cannot identify one.
+_copilot_session_has_content() {
+	local dir="$1"
+	[ -f "$dir/session.db" ] || [ -s "$dir/events.jsonl" ]
+}
+
 get_copilot_session_from_lock() {
 	local child_pid="$1"
 	local args="${2:-}"
@@ -591,13 +614,10 @@ get_copilot_session_from_lock() {
 		sid="${lock%/*}"
 		sid="${sid##*/}"
 		_copilot_is_uuid "$sid" || continue
-		# Resumability gate. The lock appears at TUI startup, but Copilot only
-		# writes session.db (and events.jsonl) once the session has real
-		# content, and only such a session can be resumed -- `--resume=<uuid>`
-		# on a still-empty one exits with "No session, task, or name matched".
-		# Saving it would replay a command that errors in the user's pane, so
-		# treat "no session.db yet" as "nothing to save yet".
-		[ -f "${lock%/*}/session.db" ] || continue
+		# Resumability gate: skip sessions with no resumable content yet, so
+		# restore never replays a `--resume` that errors in the user's pane.
+		# Accepts legacy session.db or a 1.0.88+ non-empty events.jsonl.
+		_copilot_session_has_content "${lock%/*}" || continue
 		# The lock records its owner; a mismatch means we misread the layout.
 		recorded=""
 		IFS= read -r recorded <"$lock" 2>/dev/null || true
@@ -644,7 +664,7 @@ get_copilot_session() {
 			# <uuid>` on a blank TUI puts a UUID in argv long before the session
 			# can be resumed, so without this the fallback happily saves one
 			# that restore can only fail on.
-			[ -f "$state_dir/$sid/session.db" ] || continue
+			_copilot_session_has_content "$state_dir/$sid" || continue
 			echo "$sid"
 			return 0
 		fi
